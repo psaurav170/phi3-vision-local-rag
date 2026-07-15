@@ -19,7 +19,6 @@ text.
 - [Pipeline details](#pipeline-details)
 - [Example queries](#example-queries)
 - [Design choices](#design-choices)
-- [Troubleshooting](#troubleshooting)
 
 ## How it works
 
