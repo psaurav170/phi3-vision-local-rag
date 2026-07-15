@@ -1,4 +1,4 @@
-# Multimodal RAG from Scratch — Phi-3-Vision · Jina-CLIP-v1 · ChromaDB
+# Multimodal RAG from Scratch: Phi-3-Vision · Jina-CLIP-v1 · ChromaDB
 
 A Retrieval-Augmented Generation system built **from scratch** that reads the paper
 *"Attention Is All You Need"* (Vaswani et al., 2017), indexes **both its text and its
