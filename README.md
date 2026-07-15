@@ -1,147 +1,231 @@
-# Multimodal RAG from Scratch: Phi-3-Vision · Jina-CLIP-v1 · ChromaDB
+# Multi-Modal RAG over "Attention Is All You Need"
 
-A Retrieval-Augmented Generation system built **from scratch** that reads the paper
-*"Attention Is All You Need"* (Vaswani et al., 2017), indexes **both its text and its
-figures**, retrieves the most relevant segments for a query, and generates a grounded answer
-with a vision-language model.
+A Retrieval-Augmented Generation (RAG) system built from scratch that answers
+questions about the paper *Attention Is All You Need*. It ingests the source
+PDF, embeds both text and figures into a single shared vector space with
+Jina-CLIP-v1, stores them in ChromaDB, retrieves the most relevant segments for
+a query, and generates grounded answers with the Phi-3-Vision model. Because
+the text and image embeddings share one space, a text query can retrieve a
+diagram, and retrieved figures are passed to the vision model alongside the
+text.
 
-The whole thing is one Google Colab notebook, split into clearly explained sections.
+## Contents
 
----
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Running the notebook](#running-the-notebook)
+- [Configuration](#configuration)
+- [Pipeline details](#pipeline-details)
+- [Example queries](#example-queries)
+- [Design choices](#design-choices)
+- [Troubleshooting](#troubleshooting)
 
-## Files
+## How it works
 
-| File | Purpose |
-|------|---------|
-| `rag_phi3_jina_chroma.ipynb` | The Colab notebook (run this). |
-| `rag_phi3_jina_chroma.py`    | The same code as a plain Python script (percent-format / Jupytext), if you prefer a `.py`. |
-| `README.md`                  | This file. |
+The system is a linear pipeline of five stages, each in its own notebook
+section:
 
----
+1. **Document ingestion**: download the PDF, extract text as overlapping
+   word-based chunks, and extract embedded figures.
+2. **Embedding generation**: encode text chunks and figures with Jina-CLIP-v1
+   into a shared 768-dimensional space, L2-normalised for cosine similarity.
+3. **Vector storage**: index all embeddings in a ChromaDB collection with
+   cosine distance; figure pixels are held separately in memory.
+4. **Retrieval**: embed the query, fetch the nearest neighbours, and guarantee
+   at least one figure is available to the generator.
+5. **Generation**: assemble retrieved text and figures into a prompt and
+   generate a grounded answer with Phi-3-Vision.
 
-## How to run
+## Requirements
 
-1. Open `rag_phi3_jina_chroma.ipynb` in **Google Colab**.
-2. Select a **GPU** runtime: `Runtime → Change runtime type → T4 GPU`.
-3. `Runtime → Run all`.
+- **Runtime:** a CUDA GPU is strongly recommended. Phi-3-Vision is a ~4B
+  parameter model; on CPU it is very slow and may run out of memory. Google
+  Colab with a T4 GPU runtime is sufficient.
+- **Python:** 3.10 or later.
+- **Models** (downloaded automatically on first run):
+  - `jinaai/jina-clip-v1`
+  - `microsoft/Phi-3-vision-128k-instruct`
 
-The notebook downloads the paper, builds the index, and answers five sample queries at the
-bottom. First run takes a few minutes (model downloads). Ask your own questions with:
+### Libraries
 
-```python
-rag("What is layer normalization used for in the Transformer?")
+The implementation uses only the permitted libraries:
+
+- `torch`
+- `chromadb`
+- `numpy`
+- `io`
+- `fitz` (PyMuPDF)
+- `requests`
+- `PIL`
+- `transformers`
+
+## Installation
+
+Install the dependencies:
+
+```
+pip install -q "transformers==4.44.2" accelerate einops timm
+pip install -q chromadb pymupdf pillow requests
 ```
 
-**Allowed libraries used in the core logic:** `torch`, `chromadb`, `numpy`, `io`, `fitz`,
-`requests`, `PIL`, `transformers`. `einops`, `timm`, and `accelerate` are installed only
-because they are runtime dependencies of the Jina-CLIP / Phi-3 remote code — they are never
-imported by our own code.
+Flash-attention is intentionally not installed; both models use the eager
+attention implementation.
 
-**Version note:** Phi-3-Vision loads with `trust_remote_code=True` and is sensitive to the
-`transformers` version; `4.44.2` works well here (`4.40.2` is a good fallback). Models are
-loaded with **eager attention**, so `flash-attn` is not required.
+### PyMuPDF / `fitz` note
 
----
+The import name `fitz` is provided by **PyMuPDF**. An unrelated abandoned stub
+package named `fitz` on PyPI squats the same import name and will cause
+`AttributeError: module 'fitz' has no attribute 'open'`. If you hit this, remove
+the stub and install the real package:
 
-## How it works (section by section)
+```
+pip uninstall -y fitz frontend PyMuPDF PyMuPDFb
+pip install PyMuPDF
+```
 
-**0. Setup** — installs packages; `torch` already ships with Colab.
+Then restart the runtime before re-running, and verify:
 
-**1. Config** — every tunable (chunk size/overlap, image size filter, `top_k`, token budget)
-lives in one `CFG` object.
+```python
+import fitz
+print(fitz.__doc__)   # should show the PyMuPDF banner, not None
+```
 
-**2. Document ingestion (`fitz` + `requests`)** — the PDF is streamed into memory (no disk
-write). Text is extracted page-by-page and split into **overlapping word windows** (220 words,
-40-word overlap) so no sentence is lost at a boundary and every chunk keeps its **page number**
-for citation. Embedded figures are decoded to `PIL` images and filtered by a minimum
-dimension to drop logos/artifacts.
+## Running the notebook
 
-**3. Embeddings (Jina-CLIP-v1)** — `encode_text` and `encode_image` map text and images into
-**one shared 768-d space**. We run inference under `torch.no_grad()`, in batches, and
-L2-normalize so cosine similarity is consistent. *This shared space is the core trick:* a
-text query can retrieve a diagram.
+1. Open the notebook in Jupyter or Google Colab.
+2. On Colab, set the runtime to GPU: **Runtime > Change runtime type > T4 GPU**.
+3. Run the setup and `fitz` cells at the top.
+4. Run the remaining sections in order (**Runtime > Run all** works once setup
+   is done).
 
-**4. Vector DB (ChromaDB)** — a single cosine collection holds text and image vectors.
-Text chunks store their text in `documents`; figures store only metadata (`type`, `page`)
-while the actual `PIL` images stay in an in-memory `IMAGE_STORE` keyed by the same id (Chroma
-holds vectors, not pixels). Switch to `PersistentClient` to persist.
+The first run downloads both models, which takes a few minutes. Phi-3-Vision is
+saved to a local directory (`./Phi-3-vision-128k-instruct`) and reused on later
+runs.
 
-**5. Retrieval** — the query is embedded with the *same* text encoder and Chroma returns the
-nearest neighbours. Because text-vs-text similarity usually beats text-vs-image in CLIP space,
-a pure `top_k` can come back all-text; so we **guarantee at least one figure** via a
-metadata-filtered query. That makes figure-centric questions actually use the figure.
+## Configuration
 
-**6. Generation (Phi-3-Vision)** — retrieved text and figures are assembled into a prompt with
-`<|image_i|>` placeholders (count must equal the number of images). The model is told to answer
-**only** from the provided context and to cite pages — this grounding is what turns retrieval
-into a faithful answer instead of a hallucination.
+All tunable parameters live in the `CFG` class in Section 1:
 
-**7. End-to-end `rag()`** — ties retrieval + generation together and prints provenance
-(which pages/figures fed the answer) so every result is auditable.
+| Parameter             | Default | Purpose                                                   |
+|-----------------------|---------|-----------------------------------------------------------|
+| `PDF_URL`             | paper URL | Source document to ingest                               |
+| `CHUNK_SIZE`          | 220     | Words per text chunk                                       |
+| `CHUNK_OVERLAP`       | 40      | Words shared between consecutive chunks                    |
+| `MIN_IMG_DIM`         | 100     | Minimum width and height (px) for a figure to be kept      |
+| `JINA_ID`             | jina-clip-v1 | Embedding model                                      |
+| `PHI_ID`              | Phi-3-vision-128k-instruct | Generation model                        |
+| `TOP_K`               | 5       | Nearest neighbours fetched per query                      |
+| `MIN_IMAGES`          | 1       | Figures always surfaced to the generator                  |
+| `MAX_IMAGES_TO_MODEL` | 2       | Cap on figures passed to Phi-3-Vision                     |
+| `MAX_NEW_TOKENS`      | 512     | Maximum tokens generated per answer                       |
 
-**8. Examples** — five sample queries spanning text, formula, and figure questions.
+## Pipeline details
 
----
+### Document ingestion (Section 2)
 
-## Design decisions & trade-offs
+The PDF is downloaded into memory with a `User-Agent` header to avoid occasional
+403 responses. Text is extracted per page and split into overlapping word
+windows: each chunk is `CHUNK_SIZE` words with `CHUNK_OVERLAP` words shared with
+the previous chunk, which preserves context across chunk boundaries. Fragments
+shorter than 40 characters are skipped.
 
-- **Multimodal in one space** (Jina-CLIP) rather than two separate indexes — one query, one
-  search, text *and* diagrams returned together.
-- **Overlapping page-level chunks** — keeps page provenance and cross-boundary context with a
-  dependency-free chunker (no LangChain/NLTK needed).
-- **Images in RAM, vectors in Chroma** — keeps the DB small/fast and avoids base64 bloat in
-  metadata.
-- **Guaranteed-figure retrieval** — a small, explicit fix for a real CLIP retrieval quirk.
-- **Eager attention + fp16** — fits Phi-3-Vision (~4B) and Jina-CLIP together on a single
-  free-tier T4, with no flash-attn build step.
-- **Deterministic decoding + "answer only from context"** — grounded, reproducible answers.
+Figures are extracted from every page. Each embedded image is de-duplicated by
+its PDF cross-reference (the same figure can appear on multiple pages), decoded
+to RGB, and dropped if either dimension is below `MIN_IMG_DIM` (this filters out
+logos and small artifacts).
 
----
+### Embedding generation (Section 3)
 
-## Illustrative sample outputs
+Jina-CLIP-v1 maps text and images into one shared 768-dimensional space, which
+is what allows a text query to match a figure. Text chunks are encoded with
+`encode_text` and figures with `encode_image`, then every vector is
+L2-normalised so that cosine similarity is a clean dot product. A sanity check
+confirms that a probe query about attention retrieves a relevant text chunk.
 
-> These are representative of what the notebook produces on a GPU runtime (they were **not**
-> generated in a CPU-only environment). Exact wording varies with model version.
+### Vector storage (Section 4)
 
-**Q:** *What is the scaled dot-product attention formula, and why is the scaling factor used?*
+All embeddings are stored in a ChromaDB collection named `attention_paper`
+configured for cosine distance (`hnsw:space: cosine`). Text and figures are
+stored with a `type` field (`text` or `image`) and a `page` number in their
+metadata. ChromaDB holds only vectors and metadata; the figure pixels are kept
+in an in-memory `IMAGE_STORE` dictionary keyed by id, because the generation
+step needs the original images.
 
-> Scaled dot-product attention computes attention as `softmax(QKᵀ / √d_k) · V`, where `Q`,
-> `K`, `V` are the query, key, and value matrices and `d_k` is the key dimension (page 4). The
-> `1/√d_k` factor counteracts the growth in dot-product magnitude for large `d_k`: without it,
-> the softmax is pushed into regions with vanishingly small gradients, which slows learning
-> (page 4).
+### Retrieval (Section 5)
 
-**Q:** *Explain multi-head attention and why it is beneficial.*
+The query is embedded and used to fetch the `TOP_K` nearest neighbours. To keep
+the system genuinely multimodal, if fewer than `MIN_IMAGES` figures appear in
+those results, the retriever runs a second image-only query and appends the
+missing figures. This guarantees the generator always has at least one figure
+available.
 
-> Multi-head attention runs several attention functions in parallel on linearly projected
-> copies of the queries, keys, and values, then concatenates and projects the results (page 4).
-> The paper uses `h = 8` heads. Multiple heads let the model attend to information from
-> different representation subspaces at different positions simultaneously — something a single
-> head, which averages such information, cannot do (page 4–5).
+### Generation (Section 6)
 
-**Q:** *Describe the overall model architecture shown in the figure.*
-*(Figure 1 is retrieved and shown to Phi-3-Vision.)*
+Retrieved text excerpts (with page numbers) and up to `MAX_IMAGES_TO_MODEL`
+figures are assembled into a single prompt. The prompt instructs the model to
+answer using only the provided context, to say so when the context is
+insufficient, and to cite page numbers. Figures are referenced with Phi-3-Vision
+image placeholders and passed to the processor. Generation is deterministic
+(greedy, `do_sample=False`). Phi-3-Vision loads in float16 on GPU and float32 on
+CPU, with eager attention.
 
-> The figure shows an encoder–decoder Transformer. The encoder (left) is a stack of identical
-> layers, each with a multi-head self-attention sub-layer and a position-wise feed-forward
-> sub-layer, both wrapped in residual connections and layer normalization. The decoder (right)
-> adds a third, masked multi-head attention sub-layer over the encoder output, and its
-> self-attention is masked so each position only attends to earlier positions. Inputs and
-> outputs are embedded and combined with positional encodings before entering the stacks; the
-> decoder ends in a linear + softmax layer producing output probabilities (page 3).
+### End-to-end pipeline (Section 7)
 
-**Q:** *What BLEU scores did the Transformer achieve, and how did training cost compare?*
+The `rag(query)` function ties the stages together: it retrieves context, prints
+what was retrieved (ids, pages, types, distances), shows which figures were fed
+to the model, and prints the generated answer.
 
-> The big Transformer reached 28.4 BLEU on English-to-German and 41.8 BLEU on
-> English-to-French, setting new state-of-the-art results while training at a fraction of the
-> cost of the previous best models (page 8).
+## Example queries
 
----
+Section 8 runs four representative queries:
 
-## Extending it
+1. **What the Transformer is** and how it differs from recurrent and
+   convolutional sequence models.
+2. **Multi-head attention** and why it is beneficial compared to single-head
+   attention.
+3. **Translation results (BLEU)** and training cost.
+4. **The model architecture diagram**: a figure-centric query that exercises
+   the multimodal path by feeding a retrieved figure to the vision model.
 
-- Persist the index with `chromadb.PersistentClient(path="./chroma")`.
-- Add a cross-encoder re-ranker over the top-k for sharper ordering.
-- For papers whose figures are vector graphics (not embedded rasters), render whole pages to
-  images as a fallback.
-- Swap in sentence-aware chunking for cleaner boundaries.
+Run your own query with:
+
+```python
+rag("Your question about the paper here")
+```
+
+## Design choices
+
+- **Shared embedding space.** Jina-CLIP-v1 places text and images in one space,
+  so retrieval is genuinely cross-modal rather than two separate indexes.
+- **Overlapping chunks.** Word-level overlap avoids cutting sentences and
+  concepts across chunk boundaries, improving retrieval quality.
+- **Guaranteed figure retrieval.** The `MIN_IMAGES` mechanism ensures the vision
+  model is actually used, rather than defaulting to text-only answers.
+- **Deterministic generation.** Greedy decoding makes outputs reproducible for
+  evaluation.
+- **Grounded prompting.** The model is constrained to the retrieved context and
+  asked to cite pages, which reduces hallucination.
+- **No flash-attention dependency.** Eager attention keeps setup simple and
+  portable across environments.
+
+## Troubleshooting
+
+**`AttributeError: module 'fitz' has no attribute 'open'`**
+The abandoned `fitz` stub package is shadowing PyMuPDF. Follow the
+[PyMuPDF / `fitz` note](#pymupdf--fitz-note) above, then restart the runtime.
+
+**`OSError ... paging file is too small` or out-of-memory on load**
+The machine does not have enough memory to load Phi-3-Vision. Use a GPU runtime
+(Colab T4), which is the intended environment. On CPU the model is both slow and
+memory-heavy.
+
+**Generation is very slow**
+Confirm the device printed at startup is `cuda`. On CPU, each query runs a large
+vision model token by token and will take minutes. Switch to a GPU runtime, and
+optionally lower `MAX_NEW_TOKENS`.
+
+**`Descriptors cannot be created directly` (protobuf error)**
+Usually caused by an old TensorFlow build being pulled into the import path.
+This pipeline is pure PyTorch and does not need TensorFlow; removing it or
+setting `USE_TF=0` before importing `transformers` resolves it.
