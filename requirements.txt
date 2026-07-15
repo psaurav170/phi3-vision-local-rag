@@ -1,0 +1,34 @@
+# ==========================================================================
+#  Open_Insights RAG — requirements
+#  (Phi-3-Vision + Jina-CLIP-v1 + ChromaDB)
+#
+#  IMPORTANT: install PyTorch SEPARATELY *before* this file, because its
+#  GPU build comes from PyTorch's own index, not PyPI:
+#
+#    GPU (NVIDIA, CUDA 12.1):
+#      pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu121
+#
+#    CPU only:
+#      pip install torch==2.3.1 torchvision==0.18.1
+#
+#  Then:
+#      pip install -r requirements.txt
+#
+#  Use Python 3.10 or 3.11 (works on 3.12; avoid 3.13).
+# ==========================================================================
+
+# --- Hugging Face stack ---
+# Phi-3-Vision's remote code needs transformers in the 4.40-4.44 range.
+transformers==4.44.2
+accelerate==0.33.0
+
+# --- Jina-CLIP-v1 remote-code runtime deps (not imported by our code) ---
+einops==0.8.0
+timm==0.9.16
+
+# --- Vector DB / PDF / imaging / utils ---
+chromadb==0.5.5
+PyMuPDF==1.24.9
+Pillow==10.4.0
+requests==2.32.3
+numpy==1.26.4
