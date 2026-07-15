@@ -208,24 +208,3 @@ rag("Your question about the paper here")
   asked to cite pages, which reduces hallucination.
 - **No flash-attention dependency.** Eager attention keeps setup simple and
   portable across environments.
-
-## Troubleshooting
-
-**`AttributeError: module 'fitz' has no attribute 'open'`**
-The abandoned `fitz` stub package is shadowing PyMuPDF. Follow the
-[PyMuPDF / `fitz` note](#pymupdf--fitz-note) above, then restart the runtime.
-
-**`OSError ... paging file is too small` or out-of-memory on load**
-The machine does not have enough memory to load Phi-3-Vision. Use a GPU runtime
-(Colab T4), which is the intended environment. On CPU the model is both slow and
-memory-heavy.
-
-**Generation is very slow**
-Confirm the device printed at startup is `cuda`. On CPU, each query runs a large
-vision model token by token and will take minutes. Switch to a GPU runtime, and
-optionally lower `MAX_NEW_TOKENS`.
-
-**`Descriptors cannot be created directly` (protobuf error)**
-Usually caused by an old TensorFlow build being pulled into the import path.
-This pipeline is pure PyTorch and does not need TensorFlow; removing it or
-setting `USE_TF=0` before importing `transformers` resolves it.
